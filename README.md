@@ -95,6 +95,8 @@ The package uses the [Reddit API](https://www.reddit.com/dev/api/) via PRAW. You
 - `client_id` — the short string directly under your app name
 - `client_secret` — the longer string labeled "secret"
 
+Learn how to get credentials at [geeksforgeeks](https://www.geeksforgeeks.org/python/how-to-get-client_id-and-client_secret-for-python-reddit-api-registration/).
+
 **Step 3 — Set environment variables**
 
 ```bash
