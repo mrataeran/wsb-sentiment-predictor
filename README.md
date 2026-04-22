@@ -1,5 +1,40 @@
 # wsb-sentiment-predictor
 
+````md id="q7nd51"
+## 1. Install the package
+
+```bash
+cd "/Volumes/RayCue/Home/School/STAT 386/wsb-sentiment-predictor"
+pip install -e ".[dev]"
+````
+
+This installs:
+
+* `praw`
+* `transformers`
+* `torch`
+* `numpy`
+* the `Sentiment` package itself in editable mode
+
+---
+
+## 2. Get Reddit API credentials
+
+1. Go to [https://reddit.com/prefs/apps](https://reddit.com/prefs/apps)
+2. Click **Create another app** → choose **script**
+3. Copy your `client_id` (under the app name) and `client_secret`
+
+Set them as environment variables so you don't hard-code them:
+
+```bash
+export WSB_REDDIT_CLIENT_ID="your_id_here"
+export WSB_REDDIT_CLIENT_SECRET="your_secret_here"
+```
+
+```
+```
+
+
 ## sentiment_tools
 ## Three public functions form the API:
 
