@@ -7,6 +7,7 @@ import os
 import re
 
 import numpy as np
+import pandas as pd
 import praw
 import torch
 from transformers import (
@@ -34,6 +35,42 @@ SP100_TICKERS = {
 }
 
 
+_sp100_cache = None
+
+_WIKIPEDIA_URL = "https://en.wikipedia.org/wiki/S%26P_100"
+
+
+def fetch_sp100_tickers():
+    """Return the current S&P 100 constituent tickers as a set of strings.
+
+    Fetches the constituent table from Wikipedia on the first call and caches
+    the result for the lifetime of the process.  Falls back to the bundled
+    :data:`SP100_TICKERS` set if the network request fails or the page
+    structure has changed.
+
+    Returns
+    -------
+    set[str]
+        Ticker symbols (e.g. ``{"AAPL", "NVDA", ...}``).
+    """
+    global _sp100_cache
+    if _sp100_cache is not None:
+        return _sp100_cache
+
+    try:
+        tables = pd.read_html(_WIKIPEDIA_URL, attrs={"id": "constituents"})
+        tickers = set(
+            tables[0]["Symbol"].str.replace(".", "", regex=False)
+        )
+        if tickers:
+            _sp100_cache = tickers
+            return _sp100_cache
+    except Exception:
+        pass
+
+    return SP100_TICKERS
+
+
 def _extract_sp100_tickers(text):
     """Return the set of S&P 100 tickers mentioned in *text*.
 
@@ -43,7 +80,7 @@ def _extract_sp100_tickers(text):
     """
     dollar = set(re.findall(r"\$([A-Z]{1,5})\b", text))
     words = set(re.findall(r"\b([A-Z]{2,5})\b", text))
-    return (dollar | words) & SP100_TICKERS
+    return (dollar | words) & fetch_sp100_tickers()
 
 _pipeline_cache = None
 
@@ -313,10 +350,10 @@ def predict_ticker(
         ``breakdown``           – per-post title, upvote score, and sentiment
     """
     ticker = ticker.upper()
-    if ticker not in SP100_TICKERS:
+    if ticker not in fetch_sp100_tickers():
         raise ValueError(
             f"'{ticker}' is not in the S&P 100 ticker list. "
-            "See Sentiment.SP100_TICKERS for the full set."
+            "Call fetch_sp100_tickers() to see the current set."
         )
 
     reddit = _make_reddit_client(client_id, client_secret, user_agent)

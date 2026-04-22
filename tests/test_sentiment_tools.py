@@ -9,11 +9,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import Sentiment.sentiment_tools as _mod
+
 from Sentiment.sentiment_tools import (
     SP100_TICKERS,
     _extract_sp100_tickers,
     _net_sentiment,
     analyze_posts,
+    fetch_sp100_tickers,
     fetch_wsb_posts,
     predict,
     predict_sp100,
@@ -102,9 +105,69 @@ class TestNetSentiment:
         assert _net_sentiment("   ", pipe) == 0.0
 
 
+# ── fetch_sp100_tickers ────────────────────────────────────────────────────────
+
+class TestFetchSp100Tickers:
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        """Ensure the module-level cache is clear before and after each test."""
+        _mod._sp100_cache = None
+        yield
+        _mod._sp100_cache = None
+
+    def _make_fake_table(self, symbols):
+        import pandas as pd
+        return [pd.DataFrame({"Symbol": symbols})]
+
+    def test_returns_set_of_tickers_on_success(self):
+        fake = self._make_fake_table(["AAPL", "NVDA", "MSFT"])
+        with patch("Sentiment.sentiment_tools.pd.read_html", return_value=fake):
+            result = fetch_sp100_tickers()
+        assert result == {"AAPL", "NVDA", "MSFT"}
+
+    def test_dot_removed_from_ticker(self):
+        fake = self._make_fake_table(["BRK.B", "AAPL"])
+        with patch("Sentiment.sentiment_tools.pd.read_html", return_value=fake):
+            result = fetch_sp100_tickers()
+        assert "BRKB" in result
+        assert "BRK.B" not in result
+
+    def test_falls_back_to_hardcoded_on_network_error(self):
+        with patch("Sentiment.sentiment_tools.pd.read_html", side_effect=Exception("timeout")):
+            result = fetch_sp100_tickers()
+        assert result is SP100_TICKERS
+
+    def test_falls_back_when_table_returns_empty(self):
+        import pandas as pd
+        with patch("Sentiment.sentiment_tools.pd.read_html",
+                   return_value=[pd.DataFrame({"Symbol": []})]):
+            result = fetch_sp100_tickers()
+        assert result is SP100_TICKERS
+
+    def test_result_is_cached_after_first_call(self):
+        fake = self._make_fake_table(["AAPL", "NVDA"])
+        with patch("Sentiment.sentiment_tools.pd.read_html", return_value=fake) as mock_read:
+            fetch_sp100_tickers()
+            fetch_sp100_tickers()
+        mock_read.assert_called_once()
+
+    def test_cache_is_returned_on_subsequent_calls(self):
+        fake = self._make_fake_table(["AAPL"])
+        with patch("Sentiment.sentiment_tools.pd.read_html", return_value=fake):
+            first  = fetch_sp100_tickers()
+            second = fetch_sp100_tickers()
+        assert first is second
+
+
 # ── _extract_sp100_tickers ─────────────────────────────────────────────────────
 
 class TestExtractSp100Tickers:
+    @pytest.fixture(autouse=True)
+    def _mock_fetch(self):
+        """Keep ticker-extraction tests offline by pinning the live fetch."""
+        with patch("Sentiment.sentiment_tools.fetch_sp100_tickers", return_value=SP100_TICKERS):
+            yield
+
     def test_plain_uppercase_ticker(self):
         assert "NVDA" in _extract_sp100_tickers("NVDA to the moon")
 
@@ -290,64 +353,71 @@ class TestPredictTicker:
             "Sentiment.sentiment_tools._get_finbert_pipeline",
             return_value=_make_pipe(positive=positive, negative=negative),
         )
-        return reddit_patch, finbert_patch
+        tickers_patch = patch(
+            "Sentiment.sentiment_tools.fetch_sp100_tickers",
+            return_value=SP100_TICKERS,
+        )
+        return reddit_patch, finbert_patch, tickers_patch
 
     def test_buy_signal_on_positive_sentiment(self):
-        rp, fp = self._setup_mocks(positive=0.9, negative=0.05)
-        with rp, fp:
+        rp, fp, tp = self._setup_mocks(positive=0.9, negative=0.05)
+        with rp, fp, tp:
             result = predict_ticker("NVDA")
         assert result["signal"] == "buy"
 
     def test_not_buy_signal_on_negative_sentiment(self):
-        rp, fp = self._setup_mocks(positive=0.05, negative=0.9)
-        with rp, fp:
+        rp, fp, tp = self._setup_mocks(positive=0.05, negative=0.9)
+        with rp, fp, tp:
             result = predict_ticker("NVDA")
         assert result["signal"] == "not buy"
 
     def test_result_has_required_keys(self):
-        rp, fp = self._setup_mocks()
-        with rp, fp:
+        rp, fp, tp = self._setup_mocks()
+        with rp, fp, tp:
             result = predict_ticker("NVDA")
         assert {"ticker", "signal", "weighted_sentiment", "posts_analyzed", "breakdown"}.issubset(result.keys())
 
     def test_ticker_key_is_uppercased(self):
-        rp, fp = self._setup_mocks()
-        with rp, fp:
+        rp, fp, tp = self._setup_mocks()
+        with rp, fp, tp:
             result = predict_ticker("nvda")
         assert result["ticker"] == "NVDA"
 
     def test_weighted_sentiment_in_range(self):
-        rp, fp = self._setup_mocks()
-        with rp, fp:
+        rp, fp, tp = self._setup_mocks()
+        with rp, fp, tp:
             result = predict_ticker("NVDA")
         assert -1.0 <= result["weighted_sentiment"] <= 1.0
 
     def test_posts_analyzed_count(self):
-        rp, fp = self._setup_mocks(post_scores=[100, 200, 300])
-        with rp, fp:
+        rp, fp, tp = self._setup_mocks(post_scores=[100, 200, 300])
+        with rp, fp, tp:
             result = predict_ticker("NVDA")
         assert result["posts_analyzed"] == 3
 
     def test_breakdown_structure(self):
-        rp, fp = self._setup_mocks(post_scores=[500])
-        with rp, fp:
+        rp, fp, tp = self._setup_mocks(post_scores=[500])
+        with rp, fp, tp:
             result = predict_ticker("NVDA")
         entry = result["breakdown"][0]
         assert {"title", "upvote_score", "sentiment_score"}.issubset(entry.keys())
 
     def test_custom_threshold(self):
-        rp, fp = self._setup_mocks(positive=0.6, negative=0.1)
-        with rp, fp:
+        rp, fp, tp = self._setup_mocks(positive=0.6, negative=0.1)
+        with rp, fp, tp:
             result = predict_ticker("NVDA", threshold=0.99)
         assert result["signal"] == "not buy"
 
     def test_invalid_ticker_raises_value_error(self):
-        with pytest.raises(ValueError, match="not in the S&P 100"):
+        tp = patch("Sentiment.sentiment_tools.fetch_sp100_tickers", return_value=SP100_TICKERS)
+        with tp, pytest.raises(ValueError, match="not in the S&P 100"):
             predict_ticker("GME")
 
     def test_no_posts_returns_not_buy(self):
         mock_reddit = _make_mock_reddit([], use_search=True)
-        with patch("Sentiment.sentiment_tools._make_reddit_client", return_value=mock_reddit):
+        tp = patch("Sentiment.sentiment_tools.fetch_sp100_tickers", return_value=SP100_TICKERS)
+        rp = patch("Sentiment.sentiment_tools._make_reddit_client", return_value=mock_reddit)
+        with rp, tp:
             result = predict_ticker("NVDA")
         assert result["signal"] == "not buy"
         assert result["posts_analyzed"] == 0
@@ -367,82 +437,84 @@ class TestPredictSp100:
             "Sentiment.sentiment_tools._get_finbert_pipeline",
             return_value=_make_pipe(positive=positive, negative=negative),
         )
-        return reddit_patch, finbert_patch
+        tickers_patch = patch(
+            "Sentiment.sentiment_tools.fetch_sp100_tickers",
+            return_value=SP100_TICKERS,
+        )
+        return reddit_patch, finbert_patch, tickers_patch
 
     def test_mentioned_tickers_appear_in_result(self):
         subs = [_make_submission("NVDA and AAPL both ripping", score=1000)]
-        rp, fp = self._setup_mocks(subs)
-        with rp, fp:
+        rp, fp, tp = self._setup_mocks(subs)
+        with rp, fp, tp:
             result = predict_sp100()
         assert "NVDA" in result
         assert "AAPL" in result
 
     def test_unmentioned_tickers_absent_from_result(self):
         subs = [_make_submission("NVDA to the moon", score=1000)]
-        rp, fp = self._setup_mocks(subs)
-        with rp, fp:
+        rp, fp, tp = self._setup_mocks(subs)
+        with rp, fp, tp:
             result = predict_sp100()
         assert "MSFT" not in result
 
     def test_non_sp100_ticker_absent_from_result(self):
-        # GME is not in the S&P 100 — should not appear in results
         subs = [_make_submission("GME squeezing again", score=5000)]
-        rp, fp = self._setup_mocks(subs)
-        with rp, fp:
+        rp, fp, tp = self._setup_mocks(subs)
+        with rp, fp, tp:
             result = predict_sp100()
         assert "GME" not in result
 
     def test_returns_empty_dict_when_no_sp100_tickers_found(self):
         subs = [_make_submission("market is weird today", score=500)]
-        rp, fp = self._setup_mocks(subs)
-        with rp, fp:
+        rp, fp, tp = self._setup_mocks(subs)
+        with rp, fp, tp:
             result = predict_sp100()
         assert result == {}
 
     def test_returns_empty_dict_when_no_posts(self):
-        rp, fp = self._setup_mocks([])
-        with rp, fp:
+        rp, fp, tp = self._setup_mocks([])
+        with rp, fp, tp:
             result = predict_sp100()
         assert result == {}
 
     def test_each_entry_has_required_keys(self):
         subs = [_make_submission("NVDA earnings beat", score=1000)]
-        rp, fp = self._setup_mocks(subs)
-        with rp, fp:
+        rp, fp, tp = self._setup_mocks(subs)
+        with rp, fp, tp:
             result = predict_sp100()
         entry = result["NVDA"]
         assert {"signal", "weighted_sentiment", "posts_analyzed", "breakdown"}.issubset(entry.keys())
 
     def test_buy_signal_on_positive_sentiment(self):
         subs = [_make_submission("NVDA bull case", score=1000)]
-        rp, fp = self._setup_mocks(subs, positive=0.9, negative=0.05)
-        with rp, fp:
+        rp, fp, tp = self._setup_mocks(subs, positive=0.9, negative=0.05)
+        with rp, fp, tp:
             result = predict_sp100()
         assert result["NVDA"]["signal"] == "buy"
 
     def test_not_buy_signal_on_negative_sentiment(self):
         subs = [_make_submission("NVDA bear case", score=1000)]
-        rp, fp = self._setup_mocks(subs, positive=0.05, negative=0.9)
-        with rp, fp:
+        rp, fp, tp = self._setup_mocks(subs, positive=0.05, negative=0.9)
+        with rp, fp, tp:
             result = predict_sp100()
         assert result["NVDA"]["signal"] == "not buy"
 
     def test_post_shared_across_multiple_tickers(self):
         """A post mentioning two tickers should contribute to both signals."""
         subs = [_make_submission("NVDA and MSFT earnings today", score=2000)]
-        rp, fp = self._setup_mocks(subs)
-        with rp, fp:
+        rp, fp, tp = self._setup_mocks(subs)
+        with rp, fp, tp:
             result = predict_sp100()
         assert "NVDA" in result
         assert "MSFT" in result
-        # Both came from the same post, so posts_analyzed should be 1 for each
         assert result["NVDA"]["posts_analyzed"] == 1
         assert result["MSFT"]["posts_analyzed"] == 1
 
     def test_custom_threshold(self):
         subs = [_make_submission("NVDA looking okay", score=1000)]
-        rp, fp = self._setup_mocks(subs, positive=0.6, negative=0.1)
-        with rp, fp:
+        rp, fp, tp = self._setup_mocks(subs, positive=0.6, negative=0.1)
+        with rp, fp, tp:
             result = predict_sp100(threshold=0.99)
         assert result["NVDA"]["signal"] == "not buy"
 
@@ -451,8 +523,8 @@ class TestPredictSp100:
             _make_submission("NVDA and AAPL up", score=1000),
             _make_submission("MSFT down today", score=800),
         ]
-        rp, fp = self._setup_mocks(subs)
-        with rp, fp:
+        rp, fp, tp = self._setup_mocks(subs)
+        with rp, fp, tp:
             result = predict_sp100()
         for ticker in result:
             assert ticker in SP100_TICKERS
