@@ -20,7 +20,7 @@ _FINBERT_MODEL = "ProsusAI/finbert"
 _TOP_COMMENTS_PER_POST = 5
 _BUY_THRESHOLD = 0.0
 
-# Current S&P 100 constituent tickers.
+# April 22, 2026 S&P 100 constituent tickers.
 SP100_TICKERS = {
     "AAPL", "ABBV", "ABT",  "ACN",  "ADBE", "AIG",  "ALL",  "AMGN", "AMT",  "AMZN",
     "AXP",  "BA",   "BAC",  "BK",   "BKNG", "BLK",  "BMY",  "BRKB", "C",    "CAT",
