@@ -1,8 +1,8 @@
 # wsb-sentiment-predictor
 
-A Python package that fetches the top posts from **r/wallstreetbets**, runs financial sentiment analysis using **FINBert**, and outputs a simple **"buy"** or **"not buy"** signal.
+A Python package that fetches the top posts from **r/wallstreetbets**, runs financial sentiment analysis using **FINBert**, and outputs a **"buy"** or **"not buy"** signal for **S&P 100 stocks**.
 
-Sentiment is weighted by each post's upvote score and its top comments, giving more influential posts a stronger voice in the final prediction.
+You can get a signal for a single stock, scan all S&P 100 tickers mentioned across the top WSB posts at once, or run a general overall-market sentiment check.
 
 ---
 
@@ -20,26 +20,42 @@ Sentiment is weighted by each post's upvote score and its top comments, giving m
 
 ## How It Works
 
+The package offers two main modes:
+
+**Mode 1 — Single ticker** (`predict_ticker`)
 ```
-r/wallstreetbets (top N posts)
+Search WSB for posts mentioning "NVDA"
         │
         ▼
   Post title + body ──┐
-  Top 5 comments      ├──► FINBert ──► net sentiment score per post
+  Top 5 comments      ├──► FINBert ──► net sentiment per post
   (weighted by votes) ┘               (P(positive) − P(negative))
         │
         ▼
-  Aggregate across posts
-  (weighted by upvote score)
+  Aggregate across posts weighted by upvote score
         │
         ▼
   weighted_sentiment > 0  →  "buy"
   weighted_sentiment ≤ 0  →  "not buy"
 ```
 
-**FINBert** (`ProsusAI/finbert`) is a BERT model fine-tuned on financial news. It outputs three class probabilities — `positive`, `negative`, and `neutral` — from which a net score in **[−1, 1]** is computed.
+**Mode 2 — All S&P 100 tickers** (`predict_sp100`)
+```
+Fetch top N WSB posts
+        │
+        ▼
+  Scan each post for S&P 100 ticker mentions ($AAPL, MSFT, …)
+        │
+        ▼
+  Run FINBert once per post, then bucket results by ticker
+        │
+        ▼
+  { "AAPL": "buy", "MSFT": "not buy", "NVDA": "buy", … }
+```
 
-Each post's sentiment combines **60% post body** and **40% comment sentiment** (comments themselves are weighted by their own upvote scores). Posts with more upvotes carry more weight in the final aggregate.
+**FINBert** (`ProsusAI/finbert`) is a BERT model fine-tuned on financial news. It outputs three class probabilities — `positive`, `negative`, and `neutral` — from which a net score in **[−1, 1]** is computed as `P(positive) − P(negative)`.
+
+Each post's sentiment combines **60% post body** and **40% comment sentiment** (comments weighted by their own upvote scores). Posts with more upvotes carry more weight in the final aggregate.
 
 ---
 
@@ -113,21 +129,24 @@ Alternatively, pass credentials directly as arguments to any function (see [Func
 ## Quick Start
 
 ```python
-from Sentiment import predict
+from Sentiment import predict_ticker, predict_sp100
 
-result = predict()
-
+# Signal for one S&P 100 stock
+result = predict_ticker("NVDA")
 print(result["signal"])              # "buy" or "not buy"
-print(result["weighted_sentiment"])  # e.g. 0.1823
-```
+print(result["weighted_sentiment"])  # e.g. 0.312
 
-That's it. The function fetches today's top 10 WSB posts, runs FINBert on each one, and returns a signal.
+# Signals for every S&P 100 stock mentioned in today's top WSB posts
+signals = predict_sp100()
+for ticker, info in signals.items():
+    print(f"{ticker}: {info['signal']}  ({info['weighted_sentiment']:+.3f})")
+```
 
 ---
 
 ## Step-by-Step Tutorial
 
-This section walks through each layer of the package individually so you can inspect and understand what's happening at every step.
+This section walks through each layer of the package so you can inspect and understand what's happening at every step.
 
 ### Step 1 — Fetch posts from Reddit
 
@@ -136,7 +155,6 @@ from Sentiment import fetch_wsb_posts
 
 posts = fetch_wsb_posts(n_posts=5, time_filter="day")
 
-# Inspect the first post
 post = posts[0]
 print("Title:    ", post["title"])
 print("Upvotes:  ", post["score"])
@@ -148,13 +166,13 @@ Each element in `posts` is a dictionary:
 
 ```python
 {
-    "title":        "GME short squeeze incoming",
+    "title":        "NVDA earnings beat — what now?",
     "selftext":     "...",          # post body (empty for link posts)
     "score":        14200,          # upvote count
     "upvote_ratio": 0.94,
     "num_comments": 3041,
     "comments": [                   # top 5 comments by upvote score
-        {"body": "We're all gonna make it", "score": 872},
+        {"body": "Holding through earnings, let's go", "score": 872},
         ...
     ]
 }
@@ -175,26 +193,28 @@ for post in analyzed:
 Example output:
 
 ```
- 14200 upvotes | +0.412 | GME short squeeze incoming
+ 14200 upvotes | +0.412 | NVDA earnings beat — what now?
   8900 upvotes | -0.231 | My portfolio is down 60%
   7100 upvotes | +0.088 | Daily Discussion Thread
 ```
 
 `sentiment_score` is a float in **[−1, 1]**:
-- `+1.0` → strongly positive (bullish)
-- ` 0.0` → neutral
-- `−1.0` → strongly negative (bearish)
+- `+1.0` — strongly positive (bullish)
+- ` 0.0` — neutral
+- `−1.0` — strongly negative (bearish)
 
-### Step 3 — Get the final signal
+### Step 3 — Get a signal for one S&P 100 stock
+
+Use `predict_ticker` to search WSB specifically for posts discussing a stock and get its buy / not-buy signal.
 
 ```python
-from Sentiment import predict
+from Sentiment import predict_ticker
 
-result = predict(n_posts=10, time_filter="day")
+result = predict_ticker("NVDA", n_posts=10, time_filter="week")
 
+print("Ticker:            ", result["ticker"])
 print("Signal:            ", result["signal"])
 print("Weighted sentiment:", result["weighted_sentiment"])
-print("Posts analyzed:    ", result["posts_analyzed"])
 print()
 print("Per-post breakdown:")
 for entry in result["breakdown"]:
@@ -204,37 +224,88 @@ for entry in result["breakdown"]:
 Example output:
 
 ```
+Ticker:             NVDA
 Signal:             buy
-Weighted sentiment: 0.1714
-Posts analyzed:     10
+Weighted sentiment: 0.3124
 
 Per-post breakdown:
-  [ 14200 pts | +0.412]  GME short squeeze incoming — here's the DD
-  [  8900 pts | -0.231]  My portfolio is down 60% AMA
-  [  7100 pts | +0.088]  Daily Discussion Thread - April 22, 2026
+  [ 14200 pts | +0.412]  NVDA earnings beat — what now?
+  [  9300 pts | +0.289]  Why I'm still holding $NVDA into next quarter
+  [  4100 pts | -0.071]  NVDA puts printing, don't say I didn't warn you
   ...
 ```
 
-### Step 4 — Customize the prediction
+### Step 4 — Scan all S&P 100 tickers at once
+
+Use `predict_sp100` to fetch a broad set of top WSB posts, automatically detect every S&P 100 ticker mentioned, and return a signal for each one.
+
+```python
+from Sentiment import predict_sp100
+
+signals = predict_sp100(n_posts=50, time_filter="day")
+
+for ticker, info in sorted(signals.items()):
+    print(f"{ticker:<6} {info['signal']:<10} sentiment={info['weighted_sentiment']:+.3f}  posts={info['posts_analyzed']}")
+```
+
+Example output:
+
+```
+AAPL   buy        sentiment=+0.183  posts=3
+AMZN   not buy    sentiment=-0.042  posts=1
+NVDA   buy        sentiment=+0.312  posts=7
+TSLA   not buy    sentiment=-0.201  posts=4
+...
+```
+
+Only tickers that appear in at least one of the fetched posts will be included in the result.
+
+### Step 5 — Check which tickers are in the S&P 100 list
+
+```python
+from Sentiment import SP100_TICKERS
+
+print("NVDA" in SP100_TICKERS)   # True
+print("GME" in SP100_TICKERS)    # False — not in the S&P 100
+print(len(SP100_TICKERS))        # 96
+```
+
+### Step 6 — Customize the prediction
 
 ```python
 # Analyse the past week instead of today
-result = predict(n_posts=25, time_filter="week")
+result = predict_ticker("AAPL", time_filter="week")
 
 # Require stronger positive sentiment before signalling "buy"
-result = predict(threshold=0.15)
+result = predict_ticker("MSFT", threshold=0.15)
+
+# Scan more posts to catch more tickers
+signals = predict_sp100(n_posts=100, time_filter="week")
 
 # Pass credentials explicitly instead of using env vars
-result = predict(
+result = predict_ticker(
+    "JPM",
     client_id="abc123",
     client_secret="xyz789",
-    n_posts=10,
 )
 ```
 
 ---
 
 ## Function Reference
+
+### `SP100_TICKERS`
+
+A `set` of 96 current S&P 100 ticker symbols (e.g. `"AAPL"`, `"NVDA"`, `"MSFT"`). Use this to check whether a ticker is covered before calling `predict_ticker`.
+
+```python
+from Sentiment import SP100_TICKERS
+
+"NVDA" in SP100_TICKERS   # True
+"GME"  in SP100_TICKERS   # False
+```
+
+---
 
 ### `fetch_wsb_posts`
 
@@ -278,9 +349,82 @@ analyze_posts(posts)
 
 ---
 
+### `predict_ticker`
+
+Searches r/wallstreetbets for a specific S&P 100 stock and returns a buy / not-buy signal.
+
+```python
+predict_ticker(
+    ticker,
+    client_id=None,
+    client_secret=None,
+    user_agent=None,
+    n_posts=10,
+    time_filter="week",
+    threshold=0.0,
+)
+```
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `ticker` | `str` | — | An S&P 100 ticker symbol (e.g. `"NVDA"`). Raises `ValueError` if not in `SP100_TICKERS`. |
+| `client_id` | `str \| None` | `None` | Reddit app client ID. |
+| `client_secret` | `str \| None` | `None` | Reddit app client secret. |
+| `user_agent` | `str \| None` | `None` | Reddit API user agent. |
+| `n_posts` | `int` | `10` | Number of WSB search results to analyse. |
+| `time_filter` | `str` | `"week"` | Reddit time window: `"hour"`, `"day"`, `"week"`, `"month"`, `"year"`, or `"all"`. |
+| `threshold` | `float` | `0.0` | Minimum weighted sentiment required for a `"buy"` signal. |
+
+**Returns:** `dict` with the following keys:
+
+| Key | Type | Description |
+|---|---|---|
+| `ticker` | `str` | The ticker symbol in upper case |
+| `signal` | `str` | `"buy"` or `"not buy"` |
+| `weighted_sentiment` | `float` | Aggregate sentiment score in `[-1, 1]` |
+| `posts_analyzed` | `int` | Number of posts processed |
+| `breakdown` | `list[dict]` | Per-post `title`, `upvote_score`, and `sentiment_score` |
+
+---
+
+### `predict_sp100`
+
+Scans the top WSB posts, detects S&P 100 ticker mentions, and returns a per-ticker signal for every mentioned stock.
+
+```python
+predict_sp100(
+    client_id=None,
+    client_secret=None,
+    user_agent=None,
+    n_posts=50,
+    time_filter="day",
+    threshold=0.0,
+)
+```
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `client_id` | `str \| None` | `None` | Reddit app client ID. |
+| `client_secret` | `str \| None` | `None` | Reddit app client secret. |
+| `user_agent` | `str \| None` | `None` | Reddit API user agent. |
+| `n_posts` | `int` | `50` | Number of top WSB posts to scan for ticker mentions. |
+| `time_filter` | `str` | `"day"` | Reddit time window: `"hour"`, `"day"`, `"week"`, `"month"`, `"year"`, or `"all"`. |
+| `threshold` | `float` | `0.0` | Minimum weighted sentiment required for a `"buy"` signal. |
+
+**Returns:** `dict[str, dict]` — Mapping of ticker symbol → signal dict. Only tickers that appear in at least one fetched post are included. Each value contains:
+
+| Key | Type | Description |
+|---|---|---|
+| `signal` | `str` | `"buy"` or `"not buy"` |
+| `weighted_sentiment` | `float` | Aggregate sentiment score in `[-1, 1]` |
+| `posts_analyzed` | `int` | Number of posts that mentioned this ticker |
+| `breakdown` | `list[dict]` | Per-post `title`, `upvote_score`, and `sentiment_score` |
+
+---
+
 ### `predict`
 
-End-to-end function: fetches posts, runs sentiment analysis, and returns a signal.
+Returns a general WSB market-sentiment signal without filtering by any specific ticker. Useful as a broad market mood indicator.
 
 ```python
 predict(
@@ -302,14 +446,7 @@ predict(
 | `time_filter` | `str` | `"day"` | Reddit time window (same options as `fetch_wsb_posts`). |
 | `threshold` | `float` | `0.0` | Minimum weighted sentiment required for a `"buy"` signal. |
 
-**Returns:** `dict` with the following keys:
-
-| Key | Type | Description |
-|---|---|---|
-| `signal` | `str` | `"buy"` or `"not buy"` |
-| `weighted_sentiment` | `float` | Aggregate sentiment score in `[-1, 1]` |
-| `posts_analyzed` | `int` | Number of posts that were processed |
-| `breakdown` | `list[dict]` | Per-post `title`, `upvote_score`, and `sentiment_score` |
+**Returns:** `dict` with keys `signal`, `weighted_sentiment`, `posts_analyzed`, and `breakdown` (same shape as `predict_ticker` minus the `ticker` key).
 
 ---
 
